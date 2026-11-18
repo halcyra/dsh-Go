@@ -1,0 +1,126 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      flavor:
+        description: APK flavor (arm64 | x64 | all)
+        required: true
+        default: arm64
+        type: choice
+        options:
+          - arm64
+          - x64
+          - all
+      build_number:
+        description: Optional custom build number (leave empty for build minute)
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.47.7
+  NODE_VERSION: 24.22.1
+  GRADLE_VERSION: 9.3.1
+  DSH_MAVEN_MIRRORS: 0
+  TZ: Asia/Shanghai
+
+jobs:
+  build-apk:
+    name: Build Android Release APK (${{ inputs.flavor }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c52a9 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Install Android SDK components
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER=$(command -v sdkmanager)
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "platforms;android-35" \
+            "platforms;android-34" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.22.1"
+
+      - name: Flutter plugins and local.properties
+        working-directory: app
+        run: |
+          flutter pub get --enforce-lockfile
+          printf 'sdk.dir=%s\nflutter.sdk=%s\n' "$ANDROID_HOME" "$FLUTTER_ROOT" > android/local.properties
+
+      - name: Restore runtime download cache
+        id: runtime-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: runtime/.cache
+          key: runtime-downloads-v1-${{ hashFiles('runtime/build-runtime.sh', 'runtime/locks/**') }}
+          restore-keys: runtime-downloads-v1-
+
+      - name: Build bundled runtime
+        run: |
+          case "${{ inputs.flavor }}" in
+            arm64) runtime/build-runtime.sh arm64-v8a ;;
+            x64)   runtime/build-runtime.sh x86_64 ;;
+            all)   runtime/build-runtime.sh ;;
+          esac
+
+      - name: Save runtime download cache
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: runtime/.cache
+          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
+
+      - name: Build release APK
+        run: |
+          args=(-f "${{ inputs.flavor }}" --keep-daemon)
+          if [ -n "${{ inputs.build_number }}" ]; then
+            args+=(-n "${{ inputs.build_number }}")
+          fi
+          bash tooling/build-apk.sh "${args[@]}" -- --no-pub
+          ls -lh app/build/app/outputs/flutter-apk/*.apk
+          sha256sum app/build/app/outputs/flutter-apk/*.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dsh-go-apk-${{ inputs.flavor }}
+          path: app/build/app/outputs/flutter-apk/*.apk
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
