@@ -127,10 +127,15 @@ jobs:
           }
           gradle.settingsEvaluated { settings ->
               def pm = settings.pluginManagement.repositories
-              def r = pm.maven { it.setUrl(gcs) }
-              pm.remove(r)
-              pm.add(0, r)
-              rewrite(pm)
+              if (pm.isEmpty()) {
+                  pm.maven { it.setUrl(gcs) }
+                  pm.gradlePluginPortal()
+              } else {
+                  def r = pm.maven { it.setUrl(gcs) }
+                  pm.remove(r)
+                  pm.add(0, r)
+                  rewrite(pm)
+              }
               rewrite(settings.dependencyResolutionManagement.repositories)
           }
           gradle.beforeProject { project ->
