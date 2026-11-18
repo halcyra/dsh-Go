@@ -113,6 +113,36 @@ jobs:
           path: runtime/.cache
           key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
 
+      - name: Configure Gradle Maven Central mirror
+        run: |
+          mkdir -p "${GRADLE_USER_HOME:-$HOME/.gradle}/init.d"
+          cat <<'EOF' > "${GRADLE_USER_HOME:-$HOME/.gradle}/init.d/maven-central-mirror.gradle"
+          def gcs = "https://maven-central.storage-download.googleapis.com/maven2"
+          gradle.settingsEvaluated { settings ->
+              def repos = settings.pluginManagement.repositories
+              def r = repos.maven { it.setUrl(gcs) }
+              repos.remove(r)
+              repos.add(0, r)
+              repos.withType(org.gradle.api.artifacts.repositories.MavenArtifactRepository).all { repo ->
+                  if (repo.url.toString().startsWith("https://repo.maven.apache.org/maven2")) {
+                      repo.setUrl(gcs)
+                  }
+              }
+          }
+          gradle.beforeProject { project ->
+              [project.buildscript.repositories, project.repositories].each { repos ->
+                  def r = repos.maven { it.setUrl(gcs) }
+                  repos.remove(r)
+                  repos.add(0, r)
+                  repos.withType(org.gradle.api.artifacts.repositories.MavenArtifactRepository).all { repo ->
+                      if (repo.url.toString().startsWith("https://repo.maven.apache.org/maven2")) {
+                          repo.setUrl(gcs)
+                      }
+                  }
+              }
+          }
+          EOF
+
       - name: Build release APK
         run: |
           args=(-f "$APK_FLAVOR" --keep-daemon)
