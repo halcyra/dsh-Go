@@ -127,6 +127,10 @@ class PhoneControl private constructor(private val app: Context) : PhoneEnv, Con
             "phone_log_open_background" -> R.string.phone_log_open_background
             "phone_log_notify" -> R.string.phone_log_notify
             "phone_log_clipboard_read" -> R.string.phone_log_clipboard_read
+            "phone_notice_alarm" -> R.string.phone_notice_alarm
+            "phone_notice_timer" -> R.string.phone_notice_timer
+            "phone_notice_calendar" -> R.string.phone_notice_calendar
+            "phone_notice_share_to" -> R.string.phone_notice_share_to
             "phone_log_background_read" -> R.string.phone_log_background_read
             "phone_log_screen_read" -> R.string.phone_log_screen_read
             "phone_log_collect" -> R.string.phone_log_collect

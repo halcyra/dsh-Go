@@ -9,21 +9,30 @@ object SensitiveWords {
     /** Sensitive actions: a target whose label or view id hits one of these needs a confirm. */
     val confirm: List<String> = listOf(
         // l10n:keep external UI matcher
-        "发送", "发布", "提交", "支付", "付款", "购买", "下单", "转账", "红包",
+        "发送", "发表", "回复", "转发", "发布", "上传", "群发", "分享",
         // l10n:keep external UI matcher
-        "删除", "清空", "卸载", "注销", "退出登录", "授权", "同意", "拨打",
+        "加好友", "添加好友", "添加到通讯录", "关注", "点赞", "红包",
+        // l10n:keep external UI matcher
+        "保存", "提交", "删除", "移除", "清空", "卸载", "注销", "退出登录", "退出账号",
+        // l10n:keep external UI matcher
+        "支付", "付款", "转账", "购买", "下单", "结算", "充值", "提现", "退款", "订阅", "续费", "买入", "卖出", "撤单",
+        // l10n:keep external UI matcher
+        "登录", "修改密码", "重置密码", "绑定", "解绑", "授权", "同意", "安装", "拨打", "呼叫",
     )
 
     /** The same intent in view-id words (`btn_send`, `payButton`). Matched as whole id words. */
     val confirmIdWords: Set<String> = setOf(
-        "send", "publish", "submit", "pay", "payment", "checkout", "purchase", "buy",
-        "transfer", "redpacket", "hongbao", "delete", "uninstall", "logout", "signout",
-        "unregister", "authorize", "agree", "dial",
+        "send", "reply", "forward", "publish", "upload", "share", "follow", "like", "addfriend",
+        "save", "submit", "delete", "remove", "uninstall", "logout", "signout", "unregister",
+        "pay", "payment", "checkout", "purchase", "buy", "transfer", "recharge", "topup",
+        "withdraw", "refund", "subscribe", "renew", "redpacket", "hongbao",
+        "login", "signin", "changepassword", "resetpassword", "bind", "unbind", "authorize", "agree", "install", "dial",
     )
 
     /** English control labels use word boundaries: "buy" must not match "buyer". */
-    private val confirmEnglish = (confirmIdWords + setOf(
-        "post", "clear", "call", "log out", "sign out", "place order", "red packet",
+    private val confirmEnglish = ((confirmIdWords - setOf("like")) + setOf(
+        "post", "clear", "call", "log in", "sign in", "log out", "sign out", "place order",
+        "red packet", "top up", "add friend", "change password", "reset password",
     )).map { word -> word to wholeWords(word) }
 
     private fun wholeWords(word: String): Regex = Regex(
@@ -64,6 +73,7 @@ object SensitiveWords {
                 if (!text.contains(word)) continue
                 if (text.length <= SHORT_LABEL || text.startsWith(word) || text.endsWith(word)) return word
             }
+            if (text.equals("like", ignoreCase = true)) return "like"
             for ((word, pattern) in confirmEnglish) {
                 for (match in pattern.findAll(text)) {
                     if (text.length <= SHORT_LABEL || match.range.first == 0 || match.range.last == text.lastIndex)

@@ -22,12 +22,13 @@ class PhoneVisualPermissionTest {
         var afterCoordinates = false
         var imageRequest: Pair<Boolean, Boolean>? = null
         var screenText = "Details"
+        var targetLabel = "Details"
         var policy = PhonePolicies(confirmMode = ConfirmMode.ASK)
         var decision: (ConfirmRequest) -> Decision = { if (it.visualScope != null) Decision.ALLOW_VISUAL_FOR_TASK else Decision.ALLOW_APP_FOR_TASK }
         val asks = mutableListOf<ConfirmRequest>()
         var actions = 0
         var onAsk: () -> Unit = {}
-        val target get() = TargetInfo(id, 1, "button", "Details", "example.app", "Example", false, false, false)
+        val target get() = TargetInfo(id, 1, "button", targetLabel, "example.app", "Example", false, false, false)
         private val physical = object : PhoneDriver {
             override val screen = PhoneScreen.BACKGROUND
             override fun availability() = Availability(true)
@@ -83,14 +84,20 @@ class PhoneVisualPermissionTest {
         override fun close() { core.worker.shutdown() }
     }
 
-    @Test fun firstTwoQuestionsAreIndependentAndSecondImageReusesBothPermissions() {
+    @Test fun asUsualCoordinatesRunWithoutFirstInAppOrVisualPromptsWhileSensitiveTargetsConfirm() {
         Fixture().use { f ->
             f.read(); assertFalse(f.tap().isError)
-            assertEquals(2, f.asks.size)
-            assertTrue(f.asks[0].firstInApp); assertNull(f.asks[0].visualScope)
-            assertNotNull(f.asks[1].visualScope); assertFalse(f.asks[1].allowRound)
             f.read(); assertFalse(f.tap().isError)
-            assertEquals(2, f.asks.size); assertEquals(2, f.actions)
+            assertTrue(f.asks.isEmpty())
+            assertEquals(2, f.actions)
+
+            f.targetLabel = "发送"
+            f.read(); assertFalse(f.tap().isError)
+            assertEquals(1, f.asks.size)
+            assertFalse(f.asks[0].firstInApp); assertNull(f.asks[0].visualScope)
+            assertTrue(f.asks[0].allowRound)
+            f.read(); assertFalse(f.tap().isError)
+            assertEquals(1, f.asks.size); assertEquals(4, f.actions)
         }
     }
     @Test fun ordinaryAlwaysSkipsVisualConfirmationWithoutRecordingGrants() {
@@ -179,24 +186,33 @@ class PhoneVisualPermissionTest {
             assertTrue(f.tap().isError); assertEquals(1, f.actions)
         }
     }
-    @Test fun unknownAndLongTapAskInAskModeButEveryWriteHonorsWaiver() {
+    @Test fun ordinaryAndUnknownCoordinatesRunInAskModeWhileSensitiveAndEveryWriteConfirmAndHonorWaiver() {
         Fixture().use { f ->
             f.read(); f.tap(); f.asks.clear(); f.decision = { Decision.ALLOW_ONCE }
             f.knownTarget = false; f.read(); f.tap()
             f.knownTarget = true; f.read(); f.tap("long")
+            assertTrue(f.asks.isEmpty())
+
+            f.targetLabel = "发送"
+            f.read(); f.tap()
+            f.targetLabel = "Details"
+            f.policy = PhonePolicies(confirmMode = ConfirmMode.ASK, confirmEveryWritePackages = listOf("example.app"))
+            f.read(); f.tap("long")
             f.policy = PhonePolicies(confirmMode = ConfirmMode.ALWAYS, confirmEveryWritePackages = listOf("example.app"))
             f.read(); f.tap()
             assertEquals(2, f.asks.size); assertTrue(f.asks.all { it.visualScope == null })
         }
     }
-    @Test fun scopeTransitionsViaScreensWithoutCoordinatesRevokeBeforeReturningToA() {
+    @Test fun taskScopeSensitiveGrantPersistsAcrossScreensAndRevokesNextTurn() {
         Fixture().use { f ->
-            f.read(); f.tap(); val a = f.scope
+            f.targetLabel = "发送"
+            f.read(); f.tap()
             f.scope = VisualScope.Background("display-b", PhoneAppIdentity("example.app", 1010123), Any()); f.image = null; f.read()
-            f.scope = a; f.image = byteArrayOf(1); f.read(); f.tap()
-            assertEquals(3, f.asks.size)
-            f.scope = null; f.read(); f.scope = a; f.read(); f.tap()
-            assertEquals(4, f.asks.size)
+            f.scope = VisualScope.Background("display-a", PhoneAppIdentity("example.app", 10123), Any()); f.image = byteArrayOf(1); f.read(); f.tap()
+            assertEquals(1, f.asks.size)
+            f.tasks.endTask(); f.tasks.begin()
+            f.read(); f.tap()
+            assertEquals(2, f.asks.size)
         }
     }
     @Test fun filteredImageStillRefusesAndWaiverSkipsConfirmationCallback() {
@@ -221,19 +237,19 @@ class PhoneVisualPermissionTest {
             assertFalse(f.tasks.isApproved("example.app"))
         }
     }
-    @Test fun alwaysAllowCannotSkipTheIndependentVisualConfirmation() {
+    @Test fun alwaysAllowSkipsSensitiveCoordinatePromptsWithoutVisualConfirmation() {
         Fixture().use { f ->
             f.policy = PhonePolicies(alwaysAllowEnabled = true, alwaysAllowPackages = listOf("example.app"))
+            f.targetLabel = "发送"
             f.read(); assertFalse(f.tap().isError)
-            // 普通首问被「始终允许」豁免，但视觉 scope 仍必须单独确认一次。
-            assertEquals(1, f.asks.size)
-            assertNotNull(f.asks.single().visualScope)
-            assertFalse(f.asks.single().allowRound)
-            assertTrue(f.tasks.hasVisualGrant(f.tasks.activeOwner()!!, f.scope!!))
+            assertTrue(f.asks.isEmpty())
+            assertEquals(1, f.actions)
+            assertFalse(f.tasks.hasVisualGrant(f.tasks.activeOwner()!!, f.scope!!))
         }
     }
-    @Test fun policyChangedToAlwaysDuringOrdinaryConfirmationSkipsVisualQuestion() {
+    @Test fun policyChangedToAlwaysDuringSensitiveConfirmationRunsOnceWithoutVisualGrant() {
         Fixture().use { f ->
+            f.targetLabel = "发送"
             f.decision = { Decision.ALLOW_ONCE }
             f.onAsk = {
                 if (f.asks.size == 1) f.policy = PhonePolicies(confirmMode = ConfirmMode.ALWAYS,

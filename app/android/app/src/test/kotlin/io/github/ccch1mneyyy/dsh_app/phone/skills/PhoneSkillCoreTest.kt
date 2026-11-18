@@ -72,6 +72,7 @@ class PhoneSkillCoreTest {
 
     @Test fun safetyRefusalProducesNoCalledActionAndSuccessIsNotTaskCompletion() {
         Fixture().use { f ->
+            f.field = f.field.copy(label = "发送")
             f.approve = false; assertTrue(f.tap().isError)
             assertEquals(0, f.writes); assertTrue(f.snapshot().steps.isEmpty())
             f.approve = true; assertFalse(f.tap().isError)

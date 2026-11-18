@@ -45,6 +45,7 @@ class PhoneTaskSessionsTest {
     }
     @Volatile private var enabled = true
     @Volatile private var locked = false
+    @Volatile private var targetLabel = "Button"
     @Volatile private var beforeRecoveryRead: () -> Unit = {}
     private val env = object : PhoneEnv {
         override fun enabled() = enabled
@@ -61,7 +62,7 @@ class PhoneTaskSessionsTest {
             override fun foregroundPackage() = "example.app"
             override fun observe(detail: Boolean, image: Boolean): ScreenSnapshot { this@PhoneTaskSessionsTest.observe(); return ScreenSnapshot("${screen.prefix}1", "screen", "Example", "example.app") }
             override fun collect(screenId: String, listElementId: Int, maxPages: Int, until: String?) = error("unexpected collect")
-            override fun target(screenId: String, elementId: Int) = TargetInfo(screenId, elementId, "button", "Button", "example.app", "Example", false, false, false)
+            override fun target(screenId: String, elementId: Int) = TargetInfo(screenId, elementId, "button", targetLabel, "example.app", "Example", false, false, false)
             override fun perform(action: PhoneAction): ActionResult { actions.incrementAndGet(); return ActionResult(true, "done") }
             override fun open(target: PhoneAppIdentity): ActionResult =
                 this@PhoneTaskSessionsTest.open(target).also { if (it.ok) lastOpenedDriver = this }
@@ -1367,8 +1368,9 @@ class PhoneTaskSessionsTest {
             assertFalse(main.get(5, TimeUnit.SECONDS).isError)
             assertFalse(invoke("A").isError)
         } finally { end("A") }
-        // No fake approval authority was supplied, so the real Core must still refuse the write.
-        assertTrue(coordinate.get(5, TimeUnit.SECONDS).isError)
+        // Ordinary coordinate taps on an allowed As-usual app run directly once the screen is free.
+        assertFalse(coordinate.get(5, TimeUnit.SECONDS).isError)
+        assertEquals(1L, actions.get())
     }
 
     @Test fun invalidCoordinateObservationDoesNotAcquireAFallbackScreen() {
@@ -1433,6 +1435,7 @@ class PhoneTaskSessionsTest {
     }
 
     @Test fun actualSafetyGateDoesNotReuseAnotherSessionsAppApproval() {
+        targetLabel = "Send"
         val asked = mutableListOf<Long>()
         confirm = { request -> asked += checkNotNull(request.owner).taskId; Decision.ALLOW_APP_FOR_TASK }
         assertFalse(sessions.run(admit("A"), PhoneToolCatalog.TAP, mapOf("screen" to "s1", "id" to 1)).isError)
@@ -1444,6 +1447,7 @@ class PhoneTaskSessionsTest {
     }
 
     @Test fun lateApprovalForStoppedAIsNotAppliedToAOrB() {
+        targetLabel = "Send"
         invoke("B")
         confirm = { request ->
             val a = task("A")

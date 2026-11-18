@@ -58,6 +58,7 @@ class PhoneCorePolicyRevocationTest {
         var opens = 0
         var openWithGate: ((PhoneAppIdentity, () -> Boolean) -> ActionResult)? = null
         var packageName = "example.app"
+        var targetLabel = "ordinary"
         var secret = false
         var scope: VisualScope? = null
         var beforeDispatch: () -> Unit = {}
@@ -69,7 +70,7 @@ class PhoneCorePolicyRevocationTest {
         override fun foregroundPackage() = packageName
         override fun observe(detail: Boolean, image: Boolean) = ScreenSnapshot("${screen.prefix}1", "screen", "Example", packageName)
         override fun target(screenId: String, elementId: Int) = TargetInfo(screenId, elementId,
-            "button", "ordinary", packageName, "Example", secret, secret, secret)
+            "button", targetLabel, packageName, "Example", secret, secret, secret)
         override fun visualScope(screenId: String) = scope
         override fun coordinateTarget(action: PhoneAction.TapXY) = scope?.let {
             VisualTarget(it, target(action.screenId, 1))
@@ -104,6 +105,7 @@ class PhoneCorePolicyRevocationTest {
     @After fun close() = core.worker.shutdown()
 
     @Test fun denyPublishedWhileTheRealConfirmationWaitsPreventsTheOriginalWrite() {
+        main.targetLabel = "发送"
         observe()
         val owner = checkNotNull(tasks.activeOwner())
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
@@ -154,6 +156,7 @@ class PhoneCorePolicyRevocationTest {
     }
 
     @Test fun aRealOrdinaryOnceStillCoversThisActionWhenEveryWriteBecomesRequired() {
+        main.targetLabel = "发送"
         observe()
         confirm = { policies = policies.copy(confirmEveryWritePackages = listOf("example.app")); Decision.ALLOW_ONCE }
         assertFalse(tap().isError)
@@ -161,6 +164,7 @@ class PhoneCorePolicyRevocationTest {
     }
 
     @Test fun anUnrelatedPolicyChangeDoesNotDiscardAnExplicitCurrentAction() {
+        main.targetLabel = "发送"
         observe()
         confirm = { policies = policies.copy(denyPackages = listOf("other.app")); Decision.ALLOW_ONCE }
         assertFalse(tap().isError)

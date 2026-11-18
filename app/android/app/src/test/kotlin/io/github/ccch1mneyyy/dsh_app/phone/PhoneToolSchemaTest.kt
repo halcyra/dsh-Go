@@ -25,9 +25,10 @@ class PhoneToolSchemaTest {
         override fun perform(action: PhoneAction): ActionResult { actions += action; return ActionResult(true, "done") }
         override fun open(target: PhoneAppIdentity): ActionResult = error("unexpected open")
     }
+    private var policies = PhonePolicies()
     private val core = PhoneCore(object : PhoneEnv {
         override fun enabled() = true
-        override fun policies() = PhonePolicies()
+        override fun policies() = policies
         override fun isLocked() = false
         override fun a11yState() = A11yState.CONNECTED
         override fun backgroundUnavailable() = "unavailable"
@@ -131,7 +132,7 @@ class PhoneToolSchemaTest {
         assertEquals(listOf(10, 1, 1, 30, 30), pages)
     }
 
-    @Test fun tapXYKeepsNonnegativeCoordinatesAndUserConfirmation() {
+    @Test fun tapXYKeepsNonnegativeCoordinatesAndRunsOrdinaryWithoutPrompt() {
         for ((x, y) in listOf(-1 to 0, 0 to -1)) {
             assertTrue(core.call(PhoneToolCatalog.TAP_XY, mapOf("observation" to "s1", "x" to x, "y" to y)).isError)
         }
@@ -139,7 +140,7 @@ class PhoneToolSchemaTest {
         assertEquals(0, confirmations)
         assertFalse(core.call(PhoneToolCatalog.TAP_XY, mapOf("observation" to "s1", "x" to 0, "y" to 0)).isError)
         assertEquals(listOf(PhoneAction.TapXY("s1", 0, 0)), actions)
-        assertEquals(1, confirmations)
+        assertEquals(0, confirmations)
     }
     @Test fun coordinateGesturesValidateEndpointsAndDescribeTheActualConfirmedOperation() {
         val base = mapOf("observation" to "s1", "x" to 10, "y" to 20)
@@ -161,6 +162,7 @@ class PhoneToolSchemaTest {
         )) assertTrue(core.call(PhoneToolCatalog.TAP_XY, base + extra).isError)
         assertTrue(actions.isEmpty())
         assertEquals(0, confirmations)
+        policies = PhonePolicies(confirmEveryWritePackages = listOf("example.app"))
         assertFalse(core.call(PhoneToolCatalog.TAP_XY, base + ("action" to "long")).isError)
         assertEquals(PhoneAction.CoordinateGesture.LONG, (actions.last() as PhoneAction.TapXY).gesture)
         assertTrue(confirmationText.last().contains("长按"))
@@ -193,6 +195,7 @@ class PhoneToolSchemaTest {
             assertFalse(out.text, out.isError)
         }
         assertEquals(8, intents.size)
+        assertEquals(3, confirmations)
         assertEquals(listOf(IntentSpec.Alarm::class, IntentSpec.Timer::class, IntentSpec.Calendar::class,
             IntentSpec.Dial::class, IntentSpec.SmsDraft::class, IntentSpec.Share::class,
             IntentSpec.Navigate::class, IntentSpec.Settings::class), intents.map { it::class })

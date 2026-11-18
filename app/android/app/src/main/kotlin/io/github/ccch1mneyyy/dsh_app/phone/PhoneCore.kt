@@ -705,9 +705,51 @@ class PhoneCore(
         }
         if (!current(owner)) return stoppedOut("intent $kind")
         confirmSystem(plan, scope, owner, "intent $kind")?.let { return it }
+        confirmRiskyIntent(kind, call.args, plan, subject, scope, owner)?.let { return it }
+        if (!current(owner)) return stoppedOut("intent $kind")
+        if (env.isLocked()) return locked("intent $kind")
         skillTrace.markIncomplete(owner)
         val r = launchSystem(plan, owner, subject)
         return afterSystem(owner, scope, r, "intent $kind")
+    }
+
+    private fun confirmRiskyIntent(
+        kind: String,
+        a: Args,
+        plan: SystemLaunch,
+        subject: AppEntry?,
+        scope: SerialWorker.Scope,
+        owner: PhoneTasks.Owner,
+    ): Out? {
+        if (plan.target is SystemTarget.Unknown) return null
+        val app = subject ?: (plan.target as? SystemTarget.Known)?.app
+        val pkg = app?.packageName ?: plan.packageName
+        val appLabel = app?.label
+        val sentence = when (kind) {
+            "alarm" -> {
+                val base = ui.get("phone_notice_alarm", "设置闹钟") // l10n:keep test default
+                val h = a.int("hour"); val m = a.int("minute")
+                if (h != null && m != null) "$base %02d:%02d".format(h, m) else base
+            }
+            "timer" -> {
+                val base = ui.get("phone_notice_timer", "设置计时器") // l10n:keep test default
+                a.int("seconds")?.let { "$base ${it}s" } ?: base
+            }
+            "calendar" -> {
+                val base = ui.get("phone_notice_calendar", "新建日程") // l10n:keep test default
+                a.str("title")?.let { "$base「${SafetyRules.quoteText(it, 30)}」" } ?: base
+            }
+            "share" -> if (subject != null) {
+                ui.get("phone_notice_share_to", "分享到「%1\$s」", subject.label) // l10n:keep test default
+            } else return null
+            else -> return null
+        }
+        val verdict = safety.confirmation(sentence, pkg, appLabel, "intent:$kind")
+        return when (val result = safety.resolve(verdict, scope, owner)) {
+            is SafetyGate.Result.No -> Out(result.message, error = true, app = appLabel ?: pkg,
+                summary = "intent $kind", decision = result.decision)
+            is SafetyGate.Result.Go -> null
+        }
     }
 
     private fun confirmSystem(plan: SystemLaunch, scope: SerialWorker.Scope,
@@ -1146,23 +1188,10 @@ class PhoneCore(
         val app = appLabel ?: pkg
         fun writeVerdict() = safety.checkWrite(kind, target, pkg, appLabel, typed, submit, point, action as? PhoneAction.TapXY, which, visual)
         val verdict = writeVerdict()
-        var ordinaryConfirmed = verdict is SafetyGate.Verdict.Confirm
-        var decision = when (val r = safety.resolve(verdict, scope, owner)) {
+        val ordinaryConfirmed = verdict is SafetyGate.Verdict.Confirm
+        val decision = when (val r = safety.resolve(verdict, scope, owner)) {
             is SafetyGate.Result.No -> return Out(r.message, error = true, app = app, summary = summary, decision = r.decision)
             is SafetyGate.Result.Go -> r.decision
-        }
-        if (action is PhoneAction.TapXY && visual != null &&
-            !(verdict is SafetyGate.Verdict.Confirm && verdict.reason == "tap_xy")) {
-            val visualVerdict = safety.checkVisual(action, visual, owner)
-            when (val r = safety.resolve(visualVerdict, scope, owner)) {
-                is SafetyGate.Result.No -> return Out(r.message, error = true, app = app, summary = summary, decision = r.decision)
-                is SafetyGate.Result.Go -> {
-                    if (r.decision != "allowed") decision = r.decision
-                    // checkVisual can require an ordinary once for a newly ineligible coordinate.
-                    if (visualVerdict is SafetyGate.Verdict.Confirm && visualVerdict.request.visualScope == null)
-                        ordinaryConfirmed = true
-                }
-            }
         }
         // Re-read at the existing physical admission gates too: waiting for confirmation, target
         // resolution or channel capacity must not preserve an obsolete allow/waiver. This is a

@@ -116,23 +116,22 @@ class SafetyGateTest {
         }
     }
 
-    @Test fun firstAppSensitiveWordsAndWechatRequireConfirmation() {
+    @Test fun asUsualSkipsOrdinaryPromptsWhileSensitiveWordsAndEveryWriteConfirm() {
         val tasks = PhoneTasks()
         tasks.begin()
         val gate = SafetyGate({ PhonePolicies() }, tasks, { null })
         fun confirm(pkg: String, target: TargetInfo = target()) =
             gate.checkWrite(WriteKind.TAP, target, pkg, null) as SafetyGate.Verdict.Confirm
-        assertEquals("first-in-app", confirm("example.app").reason)
-        tasks.approve("example.app")
+        // Unlisted ("As usual") apps execute ordinary taps directly without first-in-app prompts.
         assertSame(SafetyGate.Verdict.Allow, gate.checkWrite(WriteKind.TAP, target(), "example.app", null))
         assertTrue(confirm("example.app", target("发送")).reason.startsWith("sensitive:"))
-        tasks.approve("com.tencent.mm")
+        // Apps kept on "Every step" still confirm every write.
         repeat(2) { assertEquals("every-write", confirm("com.tencent.mm").reason) }
     }
 
     @Test fun missingUserGateRefusesInsteadOfApproving() {
         val gate = SafetyGate({ PhonePolicies() }, PhoneTasks(), { null })
-        val verdict = gate.checkWrite(WriteKind.TAP, target(), "example.app", null)
+        val verdict = gate.checkWrite(WriteKind.TAP, target("发送"), "example.app", null)
         val result = gate.resolve(verdict, SerialWorker.Scope()) as SafetyGate.Result.No
         assertEquals("refused:no-gate", result.decision)
         assertEquals(PhoneTasks.NO_CONFIRM_MESSAGE + "。", result.message)
@@ -165,28 +164,38 @@ class SafetyGateTest {
         assertTrue(gate.checkWrite(WriteKind.TAP, target("发送"), "example.app", "Example") is SafetyGate.Verdict.Confirm)
     }
 
-    @Test fun alwaysAllowAnswersOrdinaryQuestionsButKeepsHardRulesAndCoordinates() {
+    @Test fun alwaysAllowAnswersSensitiveQuestionsWhileKeepingHardRules() {
         val tasks = PhoneTasks().apply { begin() }
         val pkg = "example.app"
         val gate = SafetyGate({ PhonePolicies(alwaysAllowEnabled = true, alwaysAllowPackages = listOf(pkg)) },
             tasks, { null })
         fun ruleOf(verdict: SafetyGate.Verdict) = (verdict as? SafetyGate.Verdict.Refuse)?.rule
-        // 普通首问与敏感词直接放行。
+        // 普通操作与该应用的敏感词直接放行。
         assertSame(SafetyGate.Verdict.Allow, gate.checkWrite(WriteKind.TAP, target("打开"), pkg, "Example"))
         assertSame(SafetyGate.Verdict.Allow, gate.checkWrite(WriteKind.TAP, target("发送"), pkg, "Example"))
+        assertSame(SafetyGate.Verdict.Allow, gate.checkWrite(WriteKind.TAP_XY, null, pkg, "Example", point = 1 to 2,
+            coordinate = PhoneAction.TapXY("s1", 1, 2)))
         // 硬规则不因始终允许而放行。
         assertEquals("deny-list", ruleOf(gate.checkWrite(WriteKind.TAP, target(), SafetyRules.DEFAULT_DENY.first(), null)))
         assertEquals("system-page", ruleOf(gate.checkWrite(WriteKind.TAP, target(), "com.android.settings", null)))
         assertEquals("secret-field", ruleOf(gate.checkWrite(WriteKind.TAP, target(password = true), pkg, "Example")))
-        // 未列入名单的 app 仍要问。
-        assertTrue(gate.checkWrite(WriteKind.TAP, target("打开"), "other.app", "Other") is SafetyGate.Verdict.Confirm)
+        // 未列入名单的 app 在敏感操作时仍要问。
+        assertSame(SafetyGate.Verdict.Allow, gate.checkWrite(WriteKind.TAP, target("打开"), "other.app", "Other"))
+        assertTrue(gate.checkWrite(WriteKind.TAP, target("发送"), "other.app", "Other") is SafetyGate.Verdict.Confirm)
         // 开关关闭时名单不生效。
         val off = SafetyGate({ PhonePolicies(alwaysAllowEnabled = false, alwaysAllowPackages = listOf(pkg)) },
             tasks, { null })
         assertTrue(off.checkWrite(WriteKind.TAP, target("发送"), pkg, "Example") is SafetyGate.Verdict.Confirm)
-        // tap_xy 保留自己的确认，不受始终允许影响。
-        assertTrue(gate.checkWrite(WriteKind.TAP_XY, null, pkg, "Example", point = 1 to 2,
-            coordinate = PhoneAction.TapXY("s1", 1, 2)) is SafetyGate.Verdict.Confirm)
+        // 密码框即使解除限制，在始终允许名单内也不能免去 ASK 确认。
+        val unlockedGate = SafetyGate({
+            PhonePolicies(
+                unlocks = PhoneUnlocks(secretFields = true),
+                alwaysAllowEnabled = true,
+                alwaysAllowPackages = listOf(pkg),
+            )
+        }, tasks, { null })
+        assertTrue(unlockedGate.checkWrite(WriteKind.TYPE, target("支付密码", password = true, secret = true).copy(isEditable = true),
+            pkg, "Example", typed = "123456") is SafetyGate.Verdict.Confirm)
     }
 
     @Test fun filtersSensitiveImagesWithoutChangingOrdinaryScreens() {
@@ -207,53 +216,122 @@ class SafetyGateTest {
         assertNull(secure.image)
         assertFalse(secure.text.contains("ordinary"))
     }
-    @Test fun unknownCoordinatesAndLongSwipeHonorTaskAndGlobalWaivers() {
+    @Test fun ordinaryCoordinatesRunDirectlyInAsUsualWhileEveryWriteAndSensitiveCoordinatesConfirm() {
         for (mode in ConfirmMode.entries) {
             val tasks = PhoneTasks().apply { begin(); waive() }
-            val gate = SafetyGate({ PhonePolicies(confirmMode = mode) }, tasks, { null })
+            val asUsualGate = SafetyGate({ PhonePolicies(confirmMode = mode) }, tasks, { null })
+            for (gesture in PhoneAction.CoordinateGesture.entries) {
+                val action = PhoneAction.TapXY("s1", 10, 20, gesture, 30, 40, 400)
+                assertSame(SafetyGate.Verdict.Allow, asUsualGate.checkWrite(WriteKind.TAP_XY, null, "example.app", "Example",
+                    point = 10 to 20, coordinate = action))
+            }
+            // Sensitive visual coordinate targets still confirm in ASK mode and honor waivers.
+            val sensitiveTarget = target("发送")
+            val sensitiveVerdict = asUsualGate.checkWrite(WriteKind.TAP_XY, sensitiveTarget, "example.app", "Example",
+                point = 10 to 20, coordinate = PhoneAction.TapXY("s1", 10, 20))
+            assertEquals(mode == ConfirmMode.ASK, sensitiveVerdict is SafetyGate.Verdict.Confirm)
+
+            // Every-write apps still confirm coordinate gestures in ASK mode, and waive in TASK/ALWAYS.
+            val everyWriteGate = SafetyGate({
+                PhonePolicies(confirmMode = mode, confirmEveryWritePackages = listOf("com.tencent.mm"))
+            }, tasks, { null })
             for (gesture in listOf(PhoneAction.CoordinateGesture.LONG, PhoneAction.CoordinateGesture.SWIPE)) {
                 val action = PhoneAction.TapXY("s1", 10, 20, gesture, 30, 40, 400)
-                repeat(2) {
-                    val verdict = gate.checkWrite(WriteKind.TAP_XY, null, "example.app", "Example",
-                        point = 10 to 20, coordinate = action)
-                    if (mode == ConfirmMode.ASK) {
-                        val question = verdict as SafetyGate.Verdict.Confirm
-                        assertFalse(question.request.firstInApp)
-                        assertTrue(question.request.allowRound)
-                    } else assertSame(SafetyGate.Verdict.Allow, verdict)
-                }
+                val verdict = everyWriteGate.checkWrite(WriteKind.TAP_XY, null, "com.tencent.mm", "WeChat",
+                    point = 10 to 20, coordinate = action)
+                if (mode == ConfirmMode.ASK) {
+                    val question = verdict as SafetyGate.Verdict.Confirm
+                    assertFalse(question.request.firstInApp)
+                    assertTrue(question.request.allowRound)
+                } else assertSame(SafetyGate.Verdict.Allow, verdict)
             }
-            // ASK 下的同 App / 动作授权仍不代替坐标确认；TASK / ALWAYS 免确认照常生效。
-            val owner = tasks.activeOwner()!!
-            assertTrue(tasks.confirmIfCurrent(owner, pkg = "example.app",
-                grant = PhoneTasks.grantKey("example.app", "tap_xy")))
-            assertEquals(mode == ConfirmMode.ASK, gate.checkWrite(WriteKind.TAP_XY, null, "example.app", "Example",
-                point = 10 to 20, coordinate = PhoneAction.TapXY("s1", 10, 20,
-                    PhoneAction.CoordinateGesture.LONG, 30, 40, 400)) is SafetyGate.Verdict.Confirm)
         }
     }
 
-    @Test fun backgroundCoordinatesHonorWaiversButKeepHardRules() {
+    @Test fun backgroundCoordinatesHonorWaiversAndEveryWriteButKeepHardRules() {
         for (mode in ConfirmMode.entries) {
             val tasks = PhoneTasks().apply { begin(); waive(); approve("example.app") }
-            val gate = SafetyGate({ PhonePolicies(confirmMode = mode) }, tasks, { null })
+            val asUsual = SafetyGate({ PhonePolicies(confirmMode = mode) }, tasks, { null })
+            val everyWrite = SafetyGate({
+                PhonePolicies(confirmMode = mode, confirmEveryWritePackages = listOf("example.app"))
+            }, tasks, { null })
             for (gesture in PhoneAction.CoordinateGesture.entries) {
                 val action = PhoneAction.TapXY("b1", 10, 20, gesture, 30, 40, 400)
-                repeat(2) {
-                    val verdict = gate.checkWrite(WriteKind.TAP_XY, null, "example.app", "Example",
-                        point = 10 to 20, coordinate = action, screen = PhoneScreen.BACKGROUND)
-                    if (mode == ConfirmMode.ASK) {
-                        val question = verdict as SafetyGate.Verdict.Confirm
-                        assertTrue(question.request.allowRound)
-                        assertFalse(question.request.firstInApp)
-                        assertTrue(question.request.sentence.contains("这是最近后台截图的位置"))
-                    } else assertSame(SafetyGate.Verdict.Allow, verdict)
-                }
+                assertSame(SafetyGate.Verdict.Allow, asUsual.checkWrite(WriteKind.TAP_XY, null, "example.app", "Example",
+                    point = 10 to 20, coordinate = action, screen = PhoneScreen.BACKGROUND))
+                val verdict = everyWrite.checkWrite(WriteKind.TAP_XY, null, "example.app", "Example",
+                    point = 10 to 20, coordinate = action, screen = PhoneScreen.BACKGROUND)
+                if (mode == ConfirmMode.ASK) {
+                    val question = verdict as SafetyGate.Verdict.Confirm
+                    assertTrue(question.request.allowRound)
+                    assertFalse(question.request.firstInApp)
+                    assertTrue(question.request.sentence.contains("这是最近后台截图的位置"))
+                } else assertSame(SafetyGate.Verdict.Allow, verdict)
             }
-            assertTrue(gate.checkWrite(WriteKind.TAP_XY, null, SafetyRules.DEFAULT_DENY.first(), "Blocked",
+            assertTrue(asUsual.checkWrite(WriteKind.TAP_XY, null, SafetyRules.DEFAULT_DENY.first(), "Blocked",
                 coordinate = PhoneAction.TapXY("b1", 1, 1), screen = PhoneScreen.BACKGROUND) is SafetyGate.Verdict.Refuse)
-            assertTrue(gate.checkWrite(WriteKind.TAP_XY, null, "com.android.settings", "Settings",
+            assertTrue(asUsual.checkWrite(WriteKind.TAP_XY, null, "com.android.settings", "Settings",
                 coordinate = PhoneAction.TapXY("b1", 1, 1), screen = PhoneScreen.BACKGROUND) is SafetyGate.Verdict.Refuse)
+        }
+    }
+
+    @Test fun wechatOrBankMovedToAsUsualAllowsOrdinaryActionsAndConfirmsRiskyOnes() {
+        for (pkg in listOf("com.tencent.mm", "com.eg.android.AlipayGphone")) {
+            val tasks = PhoneTasks()
+            val owner = (tasks.begin() as PhoneTasks.Begin.Go).owner
+            var nextDecision = Decision.ALLOW_ONCE
+            val askedReasons = mutableListOf<String>()
+            val gate = SafetyGate({
+                PhonePolicies(denyPackages = emptyList(), confirmEveryWritePackages = emptyList())
+            }, tasks, {
+                object : UserGate {
+                    override fun confirm(request: ConfirmRequest): Decision {
+                        askedReasons += request.sentence
+                        return nextDecision
+                    }
+                    override fun handoff(reason: String, timeoutMs: Long) = error("unexpected handoff")
+                    override fun status(text: String?) {}
+                }
+            })
+
+            // Ordinary A-D operations run directly without prompting.
+            assertNull(gate.checkOpen(pkg, pkg))
+            assertNull(gate.checkRead(pkg, pkg))
+            for ((kind, label) in listOf(
+                WriteKind.TAP to "搜索",
+                WriteKind.TAP to "返回",
+                WriteKind.TAP to "发消息",
+                WriteKind.TAP to "清除",
+                WriteKind.LONG_TAP to "聊天记录详情",
+                WriteKind.SCROLL to "列表",
+                WriteKind.KEY to "",
+            )) {
+                assertSame(label, SafetyGate.Verdict.Allow, gate.checkWrite(kind, target(label), pkg, pkg))
+            }
+            val inputField = TargetInfo("s1", 3, "输入框", "输入聊天内容", pkg, pkg, false, false, true)
+            assertSame(SafetyGate.Verdict.Allow, gate.checkWrite(WriteKind.TYPE, inputField, pkg, pkg, typed = "你好", submit = false))
+            for (gesture in PhoneAction.CoordinateGesture.entries) {
+                assertSame(SafetyGate.Verdict.Allow, gate.checkWrite(WriteKind.TAP_XY, null, pkg, pkg,
+                    point = 10 to 20, coordinate = PhoneAction.TapXY("s1", 10, 20, gesture, 30, 40, 400)))
+            }
+            assertTrue(askedReasons.isEmpty())
+
+            // Risky operations require confirmation and support Once / For this task / Cancel.
+            val send = gate.checkWrite(WriteKind.TAP, target("发送"), pkg, pkg) as SafetyGate.Verdict.Confirm
+            nextDecision = Decision.DENY
+            assertEquals("denied", (gate.resolve(send, SerialWorker.Scope(), owner) as SafetyGate.Result.No).decision)
+
+            nextDecision = Decision.ALLOW_ONCE
+            assertEquals("confirmed", (gate.resolve(send, SerialWorker.Scope(), owner) as SafetyGate.Result.Go).decision)
+            assertTrue(gate.checkWrite(WriteKind.TAP, target("发送"), pkg, pkg) is SafetyGate.Verdict.Confirm)
+
+            nextDecision = Decision.ALLOW_APP_FOR_TASK
+            assertEquals("confirmed-app", (gate.resolve(send, SerialWorker.Scope(), owner) as SafetyGate.Result.Go).decision)
+            assertSame(SafetyGate.Verdict.Allow, gate.checkWrite(WriteKind.TAP, target("发送"), pkg, pkg))
+            // Other risky categories still confirm.
+            assertTrue(gate.checkWrite(WriteKind.TAP, target("转账"), pkg, pkg) is SafetyGate.Verdict.Confirm)
+            assertTrue(gate.checkWrite(WriteKind.TAP, target("红包"), pkg, pkg) is SafetyGate.Verdict.Confirm)
+            assertTrue(gate.checkWrite(WriteKind.TYPE, inputField, pkg, pkg, typed = "你好", submit = true) is SafetyGate.Verdict.Confirm)
         }
     }
 

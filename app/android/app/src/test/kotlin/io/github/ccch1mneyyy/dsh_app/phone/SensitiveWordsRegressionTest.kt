@@ -32,4 +32,30 @@ class SensitiveWordsRegressionTest {
         }
         assertNull(SensitiveWords.secretHit(null, null, "example.app:id/hotpotSearch"))
     }
+
+    @Test fun riskyActionCategoriesMatchWhileOrdinaryNavigationRemainsUnmarked() {
+        for (label in listOf(
+            "发表", "回复", "转发", "上传", "群发", "分享",
+            "加好友", "添加好友", "添加到通讯录", "关注", "点赞", "红包",
+            "保存", "移除", "清空", "退出账号",
+            "结算", "充值", "提现", "退款", "订阅", "续费", "买入", "卖出", "撤单",
+            "登录", "修改密码", "重置密码", "绑定", "解绑", "安装", "呼叫",
+            "Like", "Reply", "Forward", "Upload", "Share", "Follow", "Add friend",
+            "Save", "Remove", "Recharge", "Top up", "Withdraw", "Refund",
+            "Subscribe", "Renew", "Login", "Sign in", "Bind", "Unbind", "Install",
+            "Change password", "Reset password",
+        )) {
+            assertNotNull(label, SensitiveWords.confirmHit(label, null))
+        }
+        assertEquals("like", SensitiveWords.confirmHit("", "example.app:id/btnLike"))
+        assertEquals("follow", SensitiveWords.confirmHit("", "example.app:id/followBtn"))
+        assertEquals("upload", SensitiveWords.confirmHit("", "example.app:id/action_upload"))
+
+        for (ordinary in listOf(
+            "发消息", "搜索", "继续", "清除", "返回", "更多", "展开", "折叠",
+            "加载更多", "下一页", "编辑", "草稿", "More like this", "Sounds like",
+        )) {
+            assertNull(ordinary, SensitiveWords.confirmHit(ordinary, null))
+        }
+    }
 }

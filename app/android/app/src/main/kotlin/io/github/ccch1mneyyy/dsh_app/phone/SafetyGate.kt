@@ -93,7 +93,7 @@ data class PhoneUnlocks(
  * those are where one wrong tap costs money or an account, and what prompt injection aims at.
  */
 enum class ConfirmMode(val wire: String) {
-    /** 每次都询问 (default): first step in each app, sensitive words, every-write apps, tap_xy. */
+    /** 每次都询问 (default): risky actions (sensitive controls, submit, secrets, risky intents) and every-write apps. */
     ASK("ask"),
 
     /** 本轮允许 = 本轮不再询问: the same 本轮允许 button waives the rest of this turn. */
@@ -273,28 +273,29 @@ class SafetyGate(
             return Verdict.Refuse("密码 / 验证码 / 支付框不代填也不代点。请 handoff 让用户输入。", "secret-field")
         }
         // Everything above is a hard rule (or one the person lifted); everything below only asks.
-        val eligibleVisual = kind == WriteKind.TAP_XY && coordinate != null && eligibleCoordinate(coordinate, visual, p)
-        val forceOnce = kind == WriteKind.TAP_XY && !eligibleVisual
         val everyWrite = pkg != null && pkg in p.confirmEveryWritePackages
-        val firstInApp = !forceOnce && !everyWrite && (pkg == null || !tasks.isApproved(pkg))
-        val word = if (kind == WriteKind.TAP || kind == WriteKind.LONG_TAP || kind == WriteKind.TAP_XY) SafetyRules.sensitiveWord(target?.label, target?.viewId) else null
+        val systemPage = SafetyRules.isSystemPackage(pkg)
+        val ownAppPage = pkg == ownPackage
+        val word = if (kind == WriteKind.TAP || kind == WriteKind.LONG_TAP || kind == WriteKind.TAP_XY) {
+            SafetyRules.sensitiveWord(target?.label, target?.viewId)
+        } else null
         val reason = when {
-            forceOnce -> "tap_xy"
+            secret -> "secret-field"
+            systemPage -> "system-page"
+            ownAppPage -> "own-app"
             kind == WriteKind.TYPE && submit -> "submit"
             word != null -> "sensitive:$word"
             everyWrite -> "every-write"
-            firstInApp -> "first-in-app"
             else -> return Verdict.Allow
         }
-        // A task/global waiver also answers coordinate questions; App grants stay scoped.
-        if (waived(p) || (!forceOnce && roundGranted(p, pkg, reason))) return Verdict.Allow
+        // 本轮允许 / 始终允许 / 免确认: answer here; unlocked hard rules stay confirmed in ASK mode unless waived/granted for the task.
+        if (waived(p) || roundGranted(p, pkg, reason, allowAlways = !secret && !systemPage && !ownAppPage)) return Verdict.Allow
         val actionApp = appLabel ?: pkg ?: uiText.get("phone_current_app", "当前应用") // l10n:keep test default
         val action = describe(kind, target, actionApp, if (secret) SafetyRules.MASK else typed, submit, point, coordinate) +
             if (kind == WriteKind.TAP_XY && screen == PhoneScreen.BACKGROUND)
                 uiText.get("phone_confirm_background_coordinate", "。这是最近后台截图的位置，请核对目标。此确认卡不含原截图。") else "" // l10n:keep test default
-        val sentence = if (reason == "first-in-app") uiText.get("phone_confirm_first_app", "允许 DSH 在本任务中操作「%1\$s」？第一步：%2\$s", actionApp, action) else action // l10n:keep test default
         return Verdict.Confirm(
-            ConfirmRequest(sentence = sentence, appLabel = appLabel ?: pkg, packageName = pkg, firstInApp = firstInApp),
+            ConfirmRequest(sentence = action, appLabel = appLabel ?: pkg, packageName = pkg, firstInApp = false),
             pkg,
             reason,
             grant = PhoneTasks.grantKey(pkg, reason),
@@ -302,33 +303,8 @@ class SafetyGate(
     }
 
     /** 本轮 → 始终: either grant answers without asking. */
-    private fun roundGranted(p: PhonePolicies, pkg: String?, reason: String): Boolean =
-        tasks.hasGrant(pkg, reason) || (p.alwaysAllowEnabled && pkg != null && pkg in p.alwaysAllowPackages)
-
-    /** A driver proof never waives sensitive, per-write or non-tap policy. */
-    private fun eligibleCoordinate(action: PhoneAction.TapXY, visual: VisualTarget?, policy: PhonePolicies): Boolean {
-        if (action.gesture != PhoneAction.CoordinateGesture.TAP || visual == null) return false
-        val target = visual.target
-        return target.screenId == action.screenId && target.packageName == visual.scope.packageName &&
-            !SafetyRules.isSecretTarget(target) && SafetyRules.sensitiveWord(target.label, target.viewId) == null &&
-            visual.scope.packageName !in policy.confirmEveryWritePackages
-    }
-
-    /** App grants do not fill this slot; a task/global waiver skips the question. */
-    fun checkVisual(action: PhoneAction.TapXY, visual: VisualTarget, owner: PhoneTasks.Owner): Verdict {
-        val t = visual.target
-        val ordinary = checkWrite(WriteKind.TAP_XY, t, t.packageName, t.appLabel,
-            coordinate = action, point = action.x to action.y, screen = visual.scope.screen, visual = visual)
-        if (ordinary is Verdict.Refuse) return ordinary
-        if (ordinary is Verdict.Confirm && ordinary.reason == "tap_xy") return ordinary
-        if (waived() || tasks.hasVisualGrant(owner, visual.scope)) return Verdict.Allow
-        val app = labelOf(visual.scope.packageName, t.appLabel)
-        val sentence = if (visual.scope.screen == PhoneScreen.MAIN)
-            uiText.get("phone_confirm_visual_main", "允许本任务在「%1\$s」当前窗口内，对明确识别的普通目标使用截图点击？未知或敏感目标仍逐次确认。", app) // l10n:keep test default
-        else uiText.get("phone_confirm_visual_background", "允许本任务在「%1\$s」当前后台任务范围内，对明确识别的普通目标使用截图点击？未知或敏感目标仍逐次确认；本卡不含原截图。", app) // l10n:keep test default
-        return Verdict.Confirm(ConfirmRequest(sentence, t.appLabel ?: t.packageName, t.packageName,
-            firstInApp = false, allowRound = false, visualScope = visual.scope), t.packageName, "first-visual")
-    }
+    private fun roundGranted(p: PhonePolicies, pkg: String?, reason: String, allowAlways: Boolean = true): Boolean =
+        tasks.hasGrant(pkg, reason) || (allowAlways && p.alwaysAllowEnabled && pkg != null && pkg in p.alwaysAllowPackages)
 
     /** Nothing more to ask: 始终免确认, or 本任务免确认 already granted for this task. */
     fun waived(p: PhonePolicies = policies()): Boolean =

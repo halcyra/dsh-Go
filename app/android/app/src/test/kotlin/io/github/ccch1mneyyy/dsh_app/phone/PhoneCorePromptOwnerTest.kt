@@ -25,6 +25,7 @@ class PhoneCorePromptOwnerTest {
     private var reviewRequired = false
     private var beforeHandoff: (PhoneTasks.Owner) -> Unit = {}
     private var asked = 0
+    private var handoffAsked = 0
     private val focusRequests = mutableListOf<ConfirmRequest>()
     private val confirmedPackages = mutableListOf<String?>()
     private val statuses = mutableListOf<String?>()
@@ -57,7 +58,7 @@ class PhoneCorePromptOwnerTest {
         override fun isLocked() = locked
         override fun gate() = if (!gateAvailable) null else object : UserGate {
             override fun confirm(request: ConfirmRequest): Decision { focusRequests += request; asked++; confirmedPackages += request.packageName; return confirm() }
-            override fun handoff(reason: String, timeoutMs: Long): HandoffResult { asked++; return handoff() }
+            override fun handoff(reason: String, timeoutMs: Long): HandoffResult { asked++; handoffAsked++; return handoff() }
             override fun handoff(reason: String, timeoutMs: Long, cause: HandoffCause?): HandoffResult {
                 handoffCauses += cause
                 return handoff(reason, timeoutMs)
@@ -264,11 +265,12 @@ class PhoneCorePromptOwnerTest {
             }
             val result = call()
             assertFalse(result.text, result.isError)
-            assertEquals(before + 1, asked)
+            assertEquals(before + 1, handoffAsked)
             assertEquals(before + 1, launches + urls + intents)
             assertEquals(beforeRead + 1, main.reads)
             assertTrue(result.text.contains(if (before == 0) "launched" else "attempted"))
         }
+        assertEquals(listOf("example.app"), confirmedPackages)
     }
 
     @Test fun manualReviewStopPreservesAttemptAndDoesNotReadOrRetry() {
@@ -679,10 +681,56 @@ class PhoneCorePromptOwnerTest {
             val before = asked
             val result = core.call(PhoneToolCatalog.TAP_XY, mapOf("observation" to sid, "x" to 11, "y" to 22))
             assertFalse(result.isError)
-            assertEquals(before + 1, asked)
+            assertEquals(before, asked)
             assertEquals(listOf(PhoneAction.TapXY(sid, 11, 22)), driver.actions)
             assertEquals(1, driver.writes)
         }
+        policies = PhonePolicies(confirmEveryWritePackages = listOf("example.app"))
+        for ((sid, driver) in listOf("s1" to main, "b1" to background)) {
+            val before = asked
+            val result = core.call(PhoneToolCatalog.TAP_XY, mapOf("observation" to sid, "x" to 11, "y" to 22))
+            assertFalse(result.isError)
+            assertEquals(before + 1, asked)
+            assertEquals(2, driver.writes)
+        }
+    }
+
+    @Test fun ordinaryAndRiskyIntentsHonorAsUsualAndTaskScopedGrants() {
+        val ordinaryCalls = listOf(
+            mapOf("kind" to "dial", "number" to "10086"),
+            mapOf("kind" to "sms_draft", "text" to "draft"),
+            mapOf("kind" to "share", "text" to "chooser only"),
+            mapOf("kind" to "navigate", "destination" to "Station"),
+            mapOf("kind" to "settings", "page" to "wifi"),
+        )
+        for (args in ordinaryCalls) {
+            assertFalse(core.call(PhoneToolCatalog.INTENT, args).isError)
+        }
+        assertEquals(0, asked)
+        assertEquals(ordinaryCalls.size, intents)
+
+        confirm = { Decision.DENY }
+        val cancelled = core.call(PhoneToolCatalog.INTENT, mapOf("kind" to "alarm", "hour" to 7, "minute" to 30))
+        assertTrue(cancelled.isError)
+        assertEquals("denied", core.log.last()!!.decision)
+        assertEquals(1, asked)
+        assertEquals(ordinaryCalls.size, intents)
+
+        confirm = { Decision.ALLOW_ONCE }
+        assertFalse(core.call(PhoneToolCatalog.INTENT, mapOf("kind" to "alarm", "hour" to 7, "minute" to 30)).isError)
+        assertFalse(core.call(PhoneToolCatalog.INTENT, mapOf("kind" to "alarm", "hour" to 8, "minute" to 0)).isError)
+        assertEquals(3, asked)
+
+        confirm = { Decision.ALLOW_APP_FOR_TASK }
+        assertFalse(shareIntent().isError)
+        assertFalse(shareIntent().isError)
+        assertEquals(4, asked)
+        // Different risky kind still prompts even after share was granted for this task.
+        assertFalse(core.call(PhoneToolCatalog.INTENT, mapOf("kind" to "timer", "seconds" to 30)).isError)
+        assertEquals(5, asked)
+        replace()
+        assertFalse(shareIntent().isError)
+        assertEquals(6, asked)
     }
     private fun replaceDuringNextBegin() {
         var armed = true
